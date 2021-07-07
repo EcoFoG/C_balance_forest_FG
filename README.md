@@ -5,6 +5,6 @@ It was calibrated with long-term local data using Bayesian inference.
 The model accounts for carbon fluxes from selective logging in natural forest, timber plantation, first transformation and avoided emissions through energy substitution. 
 All input data and parameters apply to the case of French Guiana, but the model can easily be adapted to other contexts.
 
-The functionning of the model and all its functions is presented in 03_Rmarkdown/Full_C_model.html
+The functionning of the model and all its functions is presented [here](03_Rmarkdown/Full_C_model/Full_C_model.pdf).
 
 Code developed by: Géraldine Derroire, Camile Piponiot, Bruno Hérault, with expert knowledge from Laurent Descroix
