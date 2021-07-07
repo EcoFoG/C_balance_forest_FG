@@ -1,0 +1,1045 @@
+---
+title: "Model of carbon balance in managed forest of French Guiana"
+author: "Geraldine Derroire, Camille Piponiot, Laurent Descroix, Bruno Herault"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    fig_caption: yes
+    highlight: pygments
+    number_sections: no
+    theme: journal
+    toc: yes
+    toc_depth: 5
+    toc_float: yes
+  word_document:
+    toc: yes
+    toc_depth: '5'
+---
+
+
+
+```{r Options and libraries, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file()) # to set WD to project path
+```
+
+
+```{r load data, warning=FALSE, message=FALSE}
+# load all data and all functions and preliminatory calculation
+source(file="01_data/Data_Input.R")
+#
+# just for this markdown for example
+scenario = "PlantIncrease" 
+nrun = 20
+Tsimu= 70
+VolTimb <- dataScenario[Scenario == scenario, VolTimb]
+LogIntScenar <- dataScenario[Scenario == scenario, LogInt]
+VolTimbPlant <- dataScenario[Scenario == scenario, VolTimbPlant]
+FuelNatFor <- dataScenario[Scenario == scenario, FuelNatFor]
+RIL <- dataScenario[Scenario == scenario, RIL]
+# get the coeffDam2Fuel for this scenario
+  if(RIL==FALSE) {CoeffDam2Fuel <- CoeffDam2FuelCL} # for conventional logging
+  if(RIL==TRUE) {CoeffDam2Fuel <- CoeffDam2FuelRIL} # for RIL
+```
+
+All biomass weight are given for dry biomass, unless stated otherwise.
+
+# Model input
+
+Some of the inputs are given by the scenarios:
+
+* *VolTimb* (m^3^/yr): Annual volume of timber that is expected to be produced (combines plantation and natural forest) 
+* *LogInt* (m^3^/ha): Logging intensity in natural forest
+* *VolTimbPlant* (m^3^/yr): Annual volume of timber expected to be produced in plantation
+* *FuelNatFor* (True/False): should wood from damage be valorised as fuelwood?
+* *RIL* (True/False): is reduced impact logging implemented? 
+* *ConnectPast*: should we account for the past emission (`r min(dataPastLogging$t0)`, `r max(dataPastLogging$t0)`)) 
+
+```{r show scenario, scenarios to test}
+dataScenarioRmd <- dataScenario
+dataScenarioRmd$VolTimb <- as.character(dataScenarioRmd$VolTimb)
+knitr::kable(dataScenarioRmd)
+```
+
+
+Some other intputs are set for all scenarios:
+
+* *nrun*: number of runs (iterations), taken as `r nrun`
+* *Tsimu*: time over which scenarios are run, taken as `r Tsimu` to allow harvest of the second cycle of plantation
+* *DistTimbNatFor* and *DistTimbPlant*: distance between the natural forest, respectively the plantation, and the sawmill, taken as `r DistTimbNatFor`km and `r DistTimbPlant`km
+* *DistFuelNatFor* and *DistFuelPlant*: distance between the natural forest, respectively the plantation, and the biomass plant, taken as `r DistFuelNatFor`km and `r DistFuelPlant`km
+* *DistMillBioPlant*: distance between the sawmill and the biomass plant, taken as `r  DistMillBioPlant`km
+* *EbiomassPlant* and *Esawmill*: efficiency of the biomass plant, respectivelly the sawmill (the default value is taken at 0.22 and 0.3, values agreed in copil GFClim, but this can be changed)
+* *RsawnAlt*: proportion of sawnwood used instead of another material (leads to avoided emission) (the default value is taken at 0.4, but this can be changed)
+* *Ccontent*: carbon content of wood AGB, taken as `r Ccontent`
+* *H*: water content of green wood (% of humidity), taken as `r H`
+* *WDtimber* and *WDfuel*: Wood density on dry of the timber from natural forest and of all trees from natural forest , taken as `r round(WDtimber,2)` and `r round(WDfuel,2)`, which correspond to `r WDtimber/0.828` and `r WDfuel/0.828` at 12% humidity (source paper CBM for timber and validated in copil GFClim for all trees). 
+For plantation, the WD differs is different for each plantation (taken among the WD of possible planted species, as considered for the growth model in plantation)  
+* *PlantDuration*: duration of a plantation rotation. 
+There is a possibility to take two different value for the expeted duration *PlantDurationExpt* (taken to plan the plantation, the default value is 30 years), and the actual one *PlantDurationObs* (taken to calculate the C fluxes, the default is PlantDurationExpt).  
+* *NThin* number of thinning events in a plantation, taken as `r NThin`
+
+ 
+
+
+
+# Sub-models and functions for plantation
+
+
+```{r model plantation, fig.cap="Conceptual model for plantation (red boxes and arrows represent C emission, green boxes represent C storage)", echo=FALSE}
+knitr::include_graphics("model_plantation.PNG")
+```
+
+
+## Planning the plantations (function *PlantPlan*)
+
+This function plans the planting in order to get the annual volume of timber from plantation expected in the scenario (*VolTimbPlant*) every year as soon as the plantations start to be harvestable (at PlantDurationExp yrs).
+It works as follow:
+
+* For all year before the first harvest of the first plantations, the plantation are done on logging units in natural forest that are deforested for plantations. 
+The proportion of the total area of the plot that can be planted is obtained as $\frac{0.5}{0.543}\times Area_{Logged}$ because the proportion of logged area and the proportion of planted area relative to the total area are expected to be correlated (since both depends on the topography). 
+The proportion of logged area has been fitted from ONF data (see below in section *Logging planning*) and has a median of 0.543. 
+The average proportion of planted area is taken as 0.5 (expect knowledge ONF).
+Logged plots are quite big (several hundred ha). 
+They have been split to have a planted area around 100 ha in order to avoid too much variability in the area planted.
+
+* These logging units are choosen (without replacement within a run) among the logging units that have been logged during the first decade of logging in French Guiana (1974-1983).
+If there is not enought for the duration of simulation, the units logged between 1984 and 1993 can also be selected.
+
+* The volume of timber that can be obtained at final harvest (per ha) is calculated as the mean volume of timber from a very high number of plantations, using the method explained in function *PlantTraj* (Note that different values of PlantDuration and ChangeProd can be used for planning and for the actual plantation trajectories).
+From this expected volume by ha, we calculate the area of plantation that is needed to provide *VolTimbPlant* every year, as soon as the first plantation are harvestable.
+The area needed in a given year is adjusted to compensate for what has been planted in the previous year, with the aim of reaching the needed area cumulatively over the years.
+
+* When the first plantation becomes harvestable (after PlantDurationObs yrs), the plots are replanted in the same year than logging.
+Planting carries on untill the end of the simulation, even if harvest would occur after the end of the simulated time.
+
+Example of area planted each year (2 runs) for a time before harvest = 30 years and a annual volume of timber expected from plantation of 80000m^3^. 
+The colors represent the planting cycle (only the first one is done after deforestation of natural forest, the other are replantation after harvest) and the dashed line is the theoretical annual area need.
+
+```{r eg plantation planning}
+# source(file="02_functions/PlantPlan.R")
+VolTimbPlant <- 80000
+# Expected volume of timber at the final harvest of a plantation (in m3/ha)
+# VolPlantExp <- get_VolPlantExp(AGBendPlant=AGBendPlant, Ccontent=Ccontent,
+#                                PlantDuration=30, RCub=RCub, 
+#                                Data_wood_plantation=Data_wood_plantation, 
+#                                ChangeProd=NULL)
+PlantPlanTEST<- PlantPlan(nrun = 2, 
+                          PlantDuration= 30, Ccontent = Ccontent,
+                          dataPlotforPlant= dataPlotforPlant,
+                          Tsimu =Tsimu, RCub=RCub, 
+                          VolTimbPlant=VolTimbPlant, ChangeProd=NULL)
+# get Area2Plant for the graph
+VolPlantExp <- get_VolPlantExp(AGBendPlant=AGBendPlant, Ccontent=Ccontent,
+                                 PlantDuration=30, RCub=RCub, 
+                                 Data_wood_plantation=Data_wood_plantation,
+                                 ChangeProd=NULL)
+Area2Plant <- VolTimbPlant / VolPlantExp
+# plot the graph
+dataGraphPlant <- PlantPlanTEST[, .(Areaplanted=sum(AreaPlant)), by=.(iter, tPlant, PlantCycle)]
+ggplot(data=dataGraphPlant, aes(x=tPlant, y=Areaplanted, fill=as.factor(PlantCycle))) +
+  geom_col() + facet_wrap(~iter) + 
+  geom_hline(yintercept = Area2Plant, linetype = "dashed") +
+  ylim(0, max(dataGraphPlant$Areaplanted )) +
+  xlab("Time (yr)") + ylab ("Total area planted in a given year (ha/yr)") + 
+  labs(fill = "Number of the planting cycle \n (1 for 1st, 2 for 2nd...)") + 
+  labs(color='Plantation cycle')
+
+
+```
+
+For some years, the area planted is less than in other years. 
+In cumulative accross years however, we stay close to what is needed (see below).
+
+```{r eg plantation Cumul}
+if (VolTimbPlant!=0) {
+  dataGraphPlant$AreaCum <- numeric()
+# dataGraphPlant[iter==1]$AreaCum <- cumsum(dataGraphPlant[iter==1]$Areaplanted)
+# dataGraphPlant[iter==2]$AreaCum <- cumsum(dataGraphPlant[iter==2]$Areaplanted)
+dataGraphPlant <- merge(data.table(iter=rep(c(1,2), each=Tsimu),
+                                   tPlant=rep(seq(1,Tsimu),2)),
+                        dataGraphPlant, by=c("iter", "tPlant"),
+                        all.x=TRUE) # add missing rows
+dataGraphPlant[1,]$AreaCum <- dataGraphPlant[1,Areaplanted]
+for (i in 2:Tsimu) {
+  dataGraphPlant[i,]$AreaCum <- 
+    sum(dataGraphPlant[i-1,AreaCum], dataGraphPlant[i,Areaplanted], na.rm = TRUE)
+}
+dataGraphPlant[Tsimu+1,]$AreaCum <- dataGraphPlant[Tsimu+1,Areaplanted]
+for (i in (Tsimu+2):(2*Tsimu)) {
+  dataGraphPlant[i,]$AreaCum <- 
+    sum(dataGraphPlant[i-1,AreaCum], dataGraphPlant[i,Areaplanted], na.rm = TRUE)
+}
+
+dataGraphPlant[,PlantCycle:=ceiling(tPlant/30)]
+dataGraphPlant$PlantCycle <- as.factor(dataGraphPlant$PlantCycle)
+
+ggplot(data=dataGraphPlant, aes(x=tPlant, y=AreaCum)) + 
+  geom_line(aes(color=PlantCycle), size=1.5) + facet_wrap(~iter) + 
+  geom_abline(intercept = 0, slope=Area2Plant, linetype = "dashed") +
+  ylim(0, max(dataGraphPlant$AreaCum )) + geom_vline(aes(xintercept=30)) + 
+  xlab("Time (yr)") + ylab ("Cumulative area planted (ha)") + 
+  labs(fill = "Number of the planting cycle \n (1 for 1st, 2 for 2nd...)") 
+}
+```
+
+
+
+## Deforesting for 1st plantation cycle (function *DeforPlant*)
+
+```{r DeforPlant function}
+source(file="02_functions/DeforPlant.R")
+RBOest <- rbeta(50000, CoeffBOdefor$alpha , CoeffBOdefor$beta)
+RBEest <- rbeta(50000, 50 , 50)
+```
+
+For the first planting cycle, natural forest plots are deforested to plant.
+This function calculate the C (in t/ha) in the different wood uses, based on the initial C stock before deforestation (ACS~0~), taken from Fayad et al:
+
+* Csawmill : amount of C in wood used as timber $Csawmill = R_{Timb} \times ACS_{0}$ 
+with $R_{Timb} \sim \mathcal{B}eta(`r round(CoeffBOdefor$alpha,3)`, `r round(CoeffBOdefor$beta,3)`)$. 
+These values are estimated based on the quantity of wood with DBH <50 cm that was sold after the clear-cutting of a 7 ha plot in Toulouri (data ONF) (cf details in the submodel description).
+This gives a median value of `r round(median(RBOest),3)` forR~Timb~ with 95% of the values being between `r round(quantile(RBOest, 0.025),3)` and `r round(quantile(RBOest, 0.975),3)`.
+
+* Cfuel : amount of C in wood used as fuelwood $Cfuel = R_{Fuel} \times ACS_{0}$
+woth $R_{Fuel} \sim \mathcal{B}eta(50, 50)$. These values where taken to match the expert knowledge estimate of a use of 50% of AGB as fuelwood.
+This gives a median value of `r round(median(RBEest),3)` forR~Timb~ with 95% of the values being between `r round(quantile(RBEest, 0.025),3)` and `r round(quantile(RBEest, 0.975),3)`.
+
+* CLWN and CFWN :  amount of C in the large (respectively fine) woody necromass left to decay on site. The proportion of LWN (*f~LWN~*) relative to FWN has been estimated for undisturbed plots of 11 Guyafor sites as $f_{LWN} \sim \mathcal{B}eta(1115,169)$ (Piponiot et al 2016, see below).
+
+For the next planting cycle, the harvested plantations are replanted so there is no deforestation.
+
+There is also the possibility to consider that there is no deforestation to plant.
+We consider that the land on which the plantation is done is bare (*i.e.* ACS~0~=0).
+In this case, Csawmill, Cfuel, CLWN and CFWN are all set to 0.
+
+
+
+
+
+
+## Carbon fluxes in plantation
+
+
+
+### For a single plantation (*function PlantTraj*)
+
+This submodel calculated the amount of C fluxes corresponding to the wood going to the sawmill (**Csawmil**), going to the biomass plant (**Cfuel**), and decaying as fine (**CFWN**) and large (**CLWN**) woody necromass for each year, in a given plantation.
+
+It proceeds as follow, with *PlantDurationObs* the duration of a plantation rotation, *NThin* the number of thinning events and *Tfirst* the time of the first thinning event:
+
+* **ACS~end~**, the amount of C in living trees at the end of the plantation , is obtained with the following model :
+
+$$AGB_{t} \sim \mathcal{LN}(log(\theta_{PlantTraj} \times t),\sigma_{PlantTraj}^2)$$
+where *AGB~t~* is the amount  of biomass accumulated at time t and that will reach the end of the plantation.
+This model is fitted with data from the project ForesTreeCulture1 (7 best performing species in Paracou, p18).
+In a first step (and without any additional data), we consider that this accumulation is linear in time. 
+Because AGB is always positive and uncertainty on AGB field estimates likely grew with AGB values, we adopt a lognormal likelihood framework.
+We can then get *ACS~end~* as follow: $ACS_{end} = AGB_{t=PlantDurationObs} \times Ccontent$.
+
+* There is a possibility to alter the ACS~end~ to test for a different productivity than the one given by the model described above, by using *ChangeProd*. 
+The new ACS~end~ is then $ACS_{end} \times ChangeProd$.
+Note that the values of ChangeProd can be different for planning the plantation and getting there actual trajectories (as can the PlantDuration). 
+This allows testing for unplanned changes in plantation productivity and duration.
+
+
+
+* **ACS~diff~** is the C in biomass that was produced but didn't stay alive untill the end of the plantation (because of natural death or thinning).
+We don't know *ACS~diff~* but can obtain it as explained below.
+
+* **ACS~thin~** is the  C in all the tree that were thinned.
+To get *ACS~thin~*, we consider that a thining event aims to anticipate the mortality of the following years.
+If there was no thinning, all AGB~diff~ would be mortality. 
+We assume that this mortality is equally distributed across years.
+The annual mortality (in C) would therefore be $\frac {ACS_{diff}} {PlantDurationObs}$.
+When thinnings are carried out, the total amount of C thinned is:
+$$ACS_{thin} = R_{Thin} \times \Big(ACS_{diff} - \frac{ACS_{diff} \times T_{first}} {PlantDurationObs}\Big)$$
+where R~thin~ is the proportion of thinning relative to the ACS~diff~ that was not lost by mortality in the years before the first thinning. 
+R~thin~ depends on the number of thinning events and the duration of the plantation:
+$$R_{thin} = (\frac{N_{thin}}{PlantDurationObs})^{\gamma_{PlantTraj}}$$
+
+With such a ratio, if there would be a thinning event every year, it would take all the mortality. 
+And if $\gamma_{PlantTraj}=1$ only the mortality of the year of thining would be thinned.
+To maximise the part of ACS~diff~ that is thinned (and therefore minimise the dead wood), we take as small value  of $\gamma_{PlantTraj}$ (we take `r gammaPlantTraj` meaning that R~thin~ would be `r round((NThin/30)^gammaPlantTraj, 2)` for a plantation of 30 years).
+
+We consider the amount of C in thinned trees to be constant among thining so the amount of C thinned in a given thinning event is:
+$$C_{thin} = \frac{ACS_{thin}}{N_{thin}}  = \frac{R_{thin}}{N_{thin}} \times \Big(ACS_{diff} - \frac{AGB_{diff} \times T_{first}} {PlantDurationObs}\Big) $$
+
+* To get **ACS~diff~**, we use $R~prod~ = \frac{ACS_{thin}}{ACS_{end}}$ obtained from plantation production tables that report the volume of wood harvested at the end of the plantation and the total volume of wood harvested during thinning events. 
+We take the mean values of *R~prod~* reported by 37 production tables (all of them from Africa). 
+We chose to take *R~prod~* as a fixed value (null variance) as the proportion of thinning is a practice that doesn't change from one plantation to the other.
+We assume the ratio obtained in volume to be the same than the ratio in biomass (which means that we consider wood density to be constant) and hence the same than the ratio in C.
+So we can get:
+
+$$ ACS_{diff} = \frac {ACS_{end} \times R_{prod}} {\big(1- \frac{T_{first}}{PlantDurationObs} \big) \times R_{thin}}$$
+
+* The time between two thinning is constant. 
+
+* As we consider that thinning events take the mortality of the following years, the mortality is considered null until the "avoided" mortality reaches the amount taken by thinning.
+
+* For all years but the year of harvest, we considered that 
+    + before `r T10` years, all trees are less than 10 cm DBH and are therefore only FWN (fine woody necromass).
+    + from `r T10` to `r Tfuel` years, the thinning are not used for fuell wood (NB not needed if the year when these two first things happen are the same)
+    + after `r Tfuel` years, thinning is used for fuelwood (a proportion of `r RfuelThin`(\*) can be taken, the rest is left to decay on site, as FWN).
+* For the year of harvest, we consider that
+    + a proportion of `r RCub`(\*) of harvested trees is timber going to sawmill
+    + a proportion of `r RfuelRemn`(\*) of harvested trees is used for fuelwood (as proportion of tree with a diameter of stem of at least 10cm)
+    + all wood remaining on site (from harvested trees and mortality) is shredded to prepare for the next plantation. So all wood remaining on site is FWN.
+* For all years after `r T10`, the proportion of LWN of a whole tree is taken as `r RLWN`(\*).
+
+All proportions followed by (\*) have been obtained from data from 30-year old trees from Paracou plantation (E. Nicolini, pers com, project ForesTreeCulture 1).
+Using these values for all trees regardless of their age is a rough approximation in the absence of data.
+This approximation has little impact of the data anyway considering the low quantity of thinned wood as compared to harvested wood.
+    
+Below is an example run of C fluxes in plantation with median values (dashed lines are thinning years).    
+
+```{r PlantTrajgraph1}
+# plot an example of fluxes avec ACSend taken as expected value
+AGBendPlantExp <- AGBendPlant[lp__==max(lp__),] # to get coef at maxlikelihood
+AGBendPlantExp$sigma <- 0 # to get the median val
+testPlantTraj <- PlantTraj(PlantDuration=30, NThin, AGBendPlant=AGBendPlantExp, gammaPlantTraj, Rprod, RLWN, Tfuel, T10, ChangeProd=NULL)
+plotPlantTraj <- melt(testPlantTraj, id="trelat", measure=c("Csawmill", "Cfuel", "CFWN" , "CLWN"), value.name="Cflux", variable.name = "Type")
+ListYrThin <- round(30/(NThin+1)*1:(NThin+1))
+ggplot(data=plotPlantTraj, aes(x=trelat, y=Cflux,fill=Type)) + geom_col() + 
+  geom_vline(xintercept=ListYrThin[-length(ListYrThin)], linetype="dashed") +
+  xlab("Time since planting (yr)") + ylab ("C fluxes (tons of C/yr)") + 
+  scale_fill_discrete(name = "Type of C flux", 
+                      labels = c("C in wood going to sawmill", "C in wood going to biomass plant", 
+                                "C in FWN", "C in LWN")) 
+```
+
+The function *PlantTraj* also give the **Cgrowth**, the C stored in a given year (hence before deducting what is dead or thinned).
+
+To illustrate, the graph below present the cumulative fluxes in a given plantation: in green the cumulative gross C storage, in red the cumulative gross emission of C from the plot (from mortality, thinning and harvest), and in blue the difference (net cumulative).
+At the end of the plantation, the difference is null as there is no more ACS in the plantation. 
+
+```{r PlantTrajgraph}
+plotPlantTrajAgreg <- plotPlantTraj[, .(Call= sum(Cflux)), by=trelat]
+plotPlantTrajAgreg$CcumEmis <- cumsum(plotPlantTrajAgreg$Call)
+plotPlantTrajAgreg$Cgrowth <- testPlantTraj$Cgrowth
+plotPlantTrajAgreg$Ccumgrowth <- cumsum(plotPlantTrajAgreg$Cgrowth)
+plotPlantTrajAgreg$diff <- plotPlantTrajAgreg[, CcumEmis-Ccumgrowth]
+
+ggplot(data=plotPlantTrajAgreg, aes(x=trelat)) + 
+  geom_line(aes(y=-Ccumgrowth), col="green") + 
+  geom_line(aes(y=CcumEmis), col="red") +
+  geom_line(aes(y=diff), col="blue") +
+  geom_vline(xintercept=ListYrThin[-length(ListYrThin)], linetype="dashed") +
+  xlab("Time since planting (yr)") + ylab("Cumulative fluxes in tons of C")
+```
+
+
+
+### Apply PlantTraj to all plantations and all iterations (function *PlantTrajAll*)
+
+This function get the trajectories for all plantations x iterations. 
+The output is a long table (with a number of rows = plantations x iterations x PlantDurationObs, except for the plantations that don't reach harvest during the time of simulation).
+
+<!--
+> **NB**: For a given plantations, the NPP can differ between plantation cycle at it is at the moment. 
+We could decide to keep it the same for all plantation cycle. 
+-->
+
+
+## Plantation activities (function *PlantAct*)
+
+The function *PlantAct* calculate all emissions related to plantation activities as follow:
+
+* Deforestation for plantation (only for year of 1st plantation, if there is deforestation of natural forest to plant) :
+    + planning and supervising activities (petrol + vehicule construction): `r EmisPlanPlant` kg C/ha (in the absence of any other data, we take the same value than for planning logging in natural forest)
+    + tree felling (staff transport and logging itself includes petrol + vehicle construction): `r EmisDefor` kg C/ t of "green" wood  (timber + fuelwood) (in the absence of any other data, we take the same value than for logging in natural forest).
+    + loading and transport from forest to sawmill and/or biomass plant (petrol + vehicle construction) `r EmisTransport` kg C/t of "green" wood  (timber + fuelwood) and km of transport + `r EmisLoading` kg C/ t of "green" wood  (timber + fuelwood). The values are the same than for natural forest (ok because same activities anyway)
+    + NB: there is no stacking wood (andainage in french) as all wood is shredded (during preparation of plantation)
+    
+    
+* Preparation of the plantation (for years plantation): `r EmisPrepPlant` kg C/ha, which includes 
+    + staff transport (petrol + vehicule construction) 
+    + wood shreding (gyrobroyage, including machine construction) (on the basis of 6h/ha)
+    + subsoiling (sous-solage, including machine construction) (on the basis of 3h/ha)
+
+
+* Plantation (for years plantation): `r EmisPlantation` kg C/ha, which includes only the transport of staff to plant (the rest is manual), 
+on the basis of 4 days per ha.
+
+* Cleaning plantation in early years: we consider that to be accounted for in the thinning for which no fuelwood is taken : `r EmisPlantClean` kg C/ha, which includes:
+    + staff transport (petrol + vehicule construction) 
+    + wood shreding (gyrobroyage, including machine construction): obtained on the basis that 1/3 day is needed per ha 
+
+* Thinning (except the thinning for which no fuelwood is taken):
+    + tree felling (staff transport and logging itself includes petrol + vehicle construction): `r EmisDefor` kg C/ t of "green" wood  (only fuelwood). 
+    + loading and transport from forest to biomass plant (petrol + vehicle construction) `r EmisTransport` kg C/t of "green" wood  (only fuelwood) and km of transport + `r EmisLoading` kg C/ t of "green" wood  (only fuelwood).
+
+* Final harvest: 
+    + tree felling (staff transport and logging itself includes petrol + vehicle construction): `r EmisDefor` kg C/ t of "green" wood  (timber + fuelwood).
+    + loading and transport from forest to sawmill and/or biomass plant (petrol + vehicle construction) `r EmisTransport` kg C/t of "green" wood  (timber + fuelwood) and km of transport + `r EmisLoading` kg C/ t of "green" wood  (timber + fuelwood).
+    + NB: wood shreding of the wood left on site is accounting for in the preparation of the next plantation
+
+The values used here are based on expert knowledge (Laurent Descroix and Eric Nicolini for time per activities 
+and Solicaz for fuel consumption of tractor) and on the ONF-ADEME study (Balata Saut-Leodate, 2011).
+
+## Plantation growth (function *PlantGrowthCum*)
+
+This function gives the cumulative C stored in trees growing in plantations, accross all plantations, for each year and each run.
+
+
+
+
+# Sub-models and functions for selective logging in natural forests
+
+```{r model nat for, fig.cap="Conceptual model for logging in natural forests (red boxes and arrows represent C emission, green boxes represent C storage)", echo=FALSE}
+knitr::include_graphics("model_nat_forest.PNG")
+```
+
+## Logging planning (function *LoggingPlan*)
+
+This function  creates a number of plots in natural forest allowing to produce the desired **VolTimb** for each year of simulation, by creating enough plots for each year to be able to produce a volume of timber $VolTimbNat= VolTimb - VolP$ from natural forests.
+
+Plots are selected from the actual list of logging units of the ONF. 
+Only the plots that have never been logged and that are meant to be logged are selected (some plots are still to be divided by the ONF, we split them into plots of an area equal to the median area of a production plot).
+The initial ACS (**ACS~0~**), the mean annual precipitation (**MAP**), the precipitation seasonality (**RainSeas**) and the topsoil bulk density (**BulkDens**) of a plot is obtained from from Fayad et al (for the ACS), WordClim V2 (MAP and RainSeas), and the Harmonised world soil database FAO (BulkDens).
+
+```{r estim proplogged}
+PropLogest <- rbeta(50000, alpha_LoggingPlan , beta_LoggingPlan)
+```
+
+
+The area of a plot that is actually logged (**AreaLogged**) is a proportion of total area of the plot (**AreaLogUnit**).
+This proportion is taken in $\mathcal{B}eta(`r alpha_LoggingPlan`,`r beta_LoggingPlan`)$. 
+This gives a median value of `r round(median(PropLogest),3)`  with 95% of the values being between `r round(quantile(PropLogest, 0.025),3)` and `r round(quantile(PropLogest, 0.975),3)`.
+
+This function selects plots without replacement untill all plots have been logged once. 
+If there is not enough plots, a second logging event on plots that have already been logged should happen. 
+However, the model of recovery has not been fitted for recovery after a second logging event.
+Allowing a second logging event would therefore not be very rigorous. 
+So in case there is not enough plots to meet the targeted timber volume, the planning of logging stops at the last year for which meeting the targeted volume is possible.
+
+
+
+```{r LoggingPlan, fig.cap="Example of 2 runs of the timber volumes produced in natural forests and plantation", eval=FALSE}
+source(file="02_functions/LoggingPlan.R")
+dataNatFor <- LoggingPlan(nrun = nrun, VolP=VolP, VolTimb=VolTimb, LogInt=LogIntScenar,
+                          Tsimu=Tsimu, dataLogUnit=dataLogUnit,
+                          alpha_LoggingPlan=alpha_LoggingPlan, beta_LoggingPlan=beta_LoggingPlan)
+# 
+# # plot an example of the changes in VolTimb for 2 iterations
+# dataNatForTest <- dataNatFor[iter %in% 1:2,]
+# plotLoggingPLan <- dataNatForTest[, .(VolTimbNat=sum(AreaLogged*LogInt)), by=.(iter, t0)]
+# # add missing rows
+# if (Tsimu-unique(plotLoggingPLan[,max(t0), by=iter]$V1)>0) {
+#   plotLoggingPLan <- rbind(plotLoggingPLan,
+#                       data.table(iter=rep(1:2,each=Tsimu-unique(plotLoggingPLan[,max(t0), by=iter]$V1)),
+#            t0=rep(seq(unique(plotLoggingPLan[,max(t0), by=iter]$V1)+1 , Tsimu), nrun),
+#            VolTimbNat=0))
+# }
+# setorder(plotLoggingPLan, iter, t0)
+# plotLoggingPLan <-cbind(plotLoggingPLan, VolP = as.vector(t(VolP)))
+# plotLoggingPLan$VolTimbReal <- plotLoggingPLan[, VolTimbNat+VolP] 
+# plotLoggingPLan <- melt(plotLoggingPLan, id=c("t0", "iter"), measure=c("VolTimbNat", "VolP", "VolTimbReal"), value.name="AnnualTimbVol", variable.name = "Source")
+# ggplot(data=plotLoggingPLan, aes(group=Source, colour=Source)) + 
+#   geom_line(aes(x=t0, y=AnnualTimbVol)) + 
+#   geom_hline(yintercept = VolTimb, linetype="dashed") +
+#   ylab("Annual volume of timber (m3)") + facet_wrap("iter")
+```
+
+
+
+## Logging damage (function *Damage*)
+
+This function predict **DisturbInt** (disturbance intensity from logging in natural forest = AGB~loss~/AGB~0~ = ACS~loss~/ACS~0~ (with AGB~loss~ = logged + damage)), 
+and **Cdamfuel** (C in wood destroyed as logging damage that will be used as fuelwood, t/ha), and 
+**Cdamresid** (residual C in wood destroyed as logging damage that is left to decay on site, t/ha)
+for each logging unit.
+
+### Damage model
+
+To calculate the C in wood resulting from damage (ACS~dam~), we uses the following model:
+$$\frac{ACS_{dam}}{ACS_{0}-ACS_{ext}} \sim \mathcal{B}eta(\alpha,\beta)$$
+with 
+
+$$\alpha = \bigg(\frac{ACS_{ext}}{ACS_{0}}\bigg)^{\gamma} \times \phi>0$$
+and 
+
+$$\beta = \Bigg(1- \bigg(\frac{ACS_{ext}}{ACS_{0}}\bigg)^{\gamma}\Bigg) 
+\times \phi >0$$
+the shape parameters.
+
+$$E\bigg(\frac{ACS_{dam}}{ACS_{0}-ACS_{ext}}\bigg) = 
+\frac{\alpha}{\alpha+\beta}=
+\bigg(\frac{ACS_{ext}}{ACS_{0}}\bigg)^{\gamma}$$
+and
+$$Var\bigg(\frac{ACS_{dam}}{ACS_{0}-ACS_{ext}}\bigg) =
+\frac{\alpha \times \beta}{(\alpha + \beta)^2 \times (\alpha + \beta +1)}=
+\frac{1}{\phi+1}\times\Bigg(1-E\bigg(\frac{ACS_{dam}}{ACS_{0}-ACS_{ext}}\bigg)\Bigg)\times E\bigg(\frac{ACS_{dam}}{ACS_{0}-ACS_{ext}}\bigg)$$
+with $\gamma \geqslant 0$ 
+
+This model has been fitted with data from the TmFO networks (94 plots, 13 sites).
+Although some of these plots have been logged with some of the practices of RIL, an attempt to include RIL in this model did not show any significant effect.
+For this reason, and because most of the plots have been logged before 2000, we consider that the damage model give damage under conventional logging.
+
+
+### Reduction of damage through RIL
+
+When the scenario implements RIL, we applied a reduction coefficient R~reduc~ to ACS~dam~ obtained with the damage model presented above.
+$$ACS_{dam}^{RIL} = ACS_{dam}^{CL} \times(1-R_{reduc})$$
+with 
+
+$$R_{reduc}\sim \mathcal{B}eta(`r round(CoeffRIL$alpha,3)`,`r round(CoeffRIL$beta,3)`)$$
+This beta distribution has been fitted using post-logging monitoring performed by the ONF (*Diagnostic post-exploitation*) for 6 plots logged under conventional logging practices and 8 plots with RIL (as described in the *Charte de l’exploitation forestière à faible impact en Guyane*).
+
+
+### Calculation of the amount of damage valorised as fuelwood
+
+*Cdamfuel* is calculated as $Cdamfuel = Ratio_{Dam2Fuel} \times ACS_{dam}$ with:
+
+
+- $Ratio_{Dam2Fuel}\sim \mathcal{B}eta(`r CoeffDam2FuelCL[,alpha]`, `r  CoeffDam2FuelCL[,beta]`)$ if the scenario allow for fuelwood harvest in natural forest and logging is conventional
+
+- $Ratio_{Dam2Fuel}\sim \mathcal{B}eta(`r CoeffDam2FuelRIL[,alpha]`, `r  CoeffDam2FuelRIL[,beta]`)$ if the scenario allow for fuelwood harvest in natural forest and logging is RIL
+
+- $Ratio_{Dam2Fuel}=0$ if the scenario doesn't allow for fuelwood harvest in natural forest.
+
+In the abscence of data to estimate *Cdamfuel*, these parameters are based on the expert knowledge that we can expect 20 tonnes of green fuelwood per ha when logging intensity is 20m3/ha (same value for CL and RIL). 
+They are estimated using data for ACS~Dam~ calculated by our damage model.
+
+<!--
+>*NB* I kept the mean of the posteriors for the parameter of this Beta, not the full distribution.
+-->
+
+The function also allows for testing the effect of increased/decreased efficiency collection of fuelwood, by giving Efuelcollect.
+The new $Ratio_{Dam2Fuel}$ is then $min(1, Ratio_{Dam2Fuel} \times Efuelcollect)$.
+
+All the damages that are not valorised as fuelwood are left to decay on site (*Cdamresid*). 
+
+```{r DamageFunc, eval=FALSE}
+source(file="02_functions/Damage.R")
+dataNatFor <- cbind(dataNatFor,
+                    Damage(LogInt=dataNatFor$LogInt, WDtimber=WDtimber, Ccontent=Ccontent,
+                           ACS0=dataNatFor$AGB0 * Ccontent, CoeffDam=CoeffDam,
+                           CoeffDam2Fuel=CoeffDam2Fuel, RIL=RIL, CoeffRIL = CoeffRIL,
+                           FuelNatFor=FuelNatFor, type="NatFor"))
+# to check visually
+# ggplot(data=dataNatFor) +
+#   geom_point(aes(x=(LogInt*WDtimber/AGB0), y=((Cdamfuel + Cdamresid) * Ccontent/(AGB0 - LogInt*WDtimber))), color="grey") + xlim(0,0.075) + ylim(0,0.15)
+```
+
+
+
+
+
+## Deforestation in natural forest (Logging roads, Main skid trails and Logging decks) (function *DeforNatFor*)
+
+This fonction gives 
+
+- the length of logging roads (**L~road~**, m/logged ha) and the length of main skid trails (**L~trail~**, , m/logged ha)
+
+- the area of logging roads (**Area~road~**, ha/logged ha), the area of main skid trails (**Area~trail~**, ha/logged ha) and the area of logging decks (**Area~deck~**, ha/logged ha)
+
+- the C in wood destroyed for logging roads (**C~road~**, t/logged ha), main skid trails (**C~trail~**, t/logged ha), and logging deck (**C~deck~**, t/logged ha).
+
+- the C in wood destroyed for logging roads, main skid trails and logging deck that can be harvested as fuelwood (**CDeforFuel**, t/logged ha).
+This value corresponds to `r FuelRoadUnit`t/logged ha of green wood (expert knowledge).
+
+- the C in wood destroyed for logging roads, main skid trails and logging deck that is not valorised as fuelwood and left to decay on site (**CDeforResid**).
+
+<!--
+> **NB** : The amont of fuelwood from road should ideally depends on the area of road. 
+As the model is built for the moment, it's impossible because the area of road itself depends on the volume of wood (timber + fuelwood) transported on the road.
+-->
+
+Logging roads are the access to an area on which at least 3000m^2^ of wood (timber + fuelwood) is harvested.
+Main skid trails are access to an area of at least 5 ha but on which less than 3000m^2^ of wood is harvested.
+Other access are secondary skids trails and are accounted for in the Damage sub-model.
+
+Following models of access are calibrated with data obtained with an access simulator using the digital elevation model to optimise access design.
+
+The lenght of access (logging road + main skid trail, m/ha) is modeled as $L_{access} \sim U(28, 33)$.
+
+Logging roads represent proportion R~road~ of L~access~, the rest is main trails. R~road~ depends on the volume of wood transported on the road 
+(Log~Int~ + Vol~fuel~) with $Vol_{Fuel} = \frac{\frac{C_{damfuel}}{C_{content}} + (1-H) \times FuelRoadUnit} {WD_{fuel}}$. 
+R~road~ is obtained from a model fitted as
+
+$$R_{road} \sim \mathcal{B}eta(A,B)$$
+
+with $A>0$ and $B>0$ the shape parameters.
+
+$$E(R_{road}) = \frac{A}{A+B} =  \frac{1}{1+\exp\big(-(\alpha_{Rroad}+\beta_{Rroad} \times ln(Log_{int}+ Vol_{fuel})\big)}$$
+and
+$$Var(R_{road}) = \frac{(1-E(R_{road})\big)\times E(R_{road})}{\phi_{Rroad}+1}$$
+
+The mean width of a road *W~road~* is obtained as follow:
+$$W_{road} \sim \mathcal{N}(\alpha_{Wroad,b} + \beta_{Wroad} \times (Log_{int}+ Vol_{fuel}) ; \sigma_{Wroad} )$$
+The mean width of a main trail *W~trail~* is obtained as follow:
+$$W_{trail} \sim \mathcal{N} (5.0000383, 0.0019279^2) $$
+We can then get: 
+
+- $Area_{road} = R_{road} \times L_{access} \times W_{road}/10000$
+
+- $Area_{trail} = (1-R_{road}) \times  L_{access} \times W_{trail}/10000$
+
+and 
+
+- $C_{road} = ACS_{0} \times Area_{road}$
+
+- $C_{trail} = ACS_{0} \times Area_{trail} \times f_{50}$ where f~50~ is the proportion of ACS~0~ in trees with DBH < 50cm (REF Camila CBM). $f_{50}\sim \mathcal{B}eta(15.10,15.32)$
+
+For *A~deck~* we use the model of (REF Camila CBM) $Area_{deck} \sim lnN (-6.12, 0.58^2)$.
+Then we get $C_{deck} = ACS_{0} \times Area_{deck}$
+
+
+```{r DeforNatForFunc, eval=FALSE}
+source(file="02_functions/DeforNatFor.R")
+dataNatFor <- cbind(dataNatFor, 
+                    DeforNatFor(LogInt=dataNatFor$LogInt, CdamFuel=dataNatFor$Cdamfuel,
+                                  ACS0=dataNatFor$AGB0*Ccontent, CoeffRroad=CoeffRroad,
+                                  CoeffWroad=CoeffWroad, WDfuel=WDfuel,
+                                  FuelRoadUnit=FuelRoadUnit, H=H, type="NatFor")) 
+# to check visually 
+# ggplot(data=dataNatFor) +
+#   geom_point(aes(x=(AGB0*Ccontent), y=Croad), color="red") +
+#   geom_point(aes(x=(AGB0*Ccontent), y=Ctrail), color="blue") +
+#   geom_point(aes(x=(AGB0*Ccontent), y=Cdeck), color="green")
+```
+
+## Logging activities (planning, road building, logging, transport) (function *LogAct*)
+
+The emissions from all logging related activities (excluding the resulting changes in ACS) are accounted for as follow:
+
+- planning activities: staff transport (petrol + vehicle construction) for pre-logging diagnostic and inventories `r EmisPlanning` kg C/ logged ha.
+
+- road builing : staff transport for planning and supervision of road builing and road building itself (petrol + vehicle construction) (*NB* ACS in trees cut for road building are accounted for by the DeforNatFor function) `r EmisRoadBuild` kg C / m of road.
+
+- logging : staff transport and logging itself (skid trail opening, felling, skidding...) (petrol + vehicle construction) (*NB* ACS in logged trees or damaged trees are accounted for by the *Logging planning* and *Logging damage*, respectively) `r EmisLogging` kg C/ t of "green" wood  (timber + fuelwood).
+
+- loading and transport from forest to sawmill and/or biomass plant (petrol + vehicle construction) `r EmisTransport` kg C/t of "green" wood  (timber + fuelwood) and km of transport + `r EmisLoading` kg C/ t of "green" wood  (timber + fuelwood).
+
+All values used here have been obtained from the ONF-ADEME study (Balata Saut-Leodate, 2011).
+
+
+The function *LogAct* gives these emissions for each plots and run in t/ha.
+
+
+## Forest recovery (function *Recovery*)
+
+This function gives the cumulative C balance due to recovery accross all logging units **Crecov**, for each plot *j* and each year *k* and each run using a model fitted with data from multiples TmFO sites accross the Amazon.
+
+There are two different methods for recovery.
+
+
+### Method 1 
+
+This is the method used for the WPt. 
+It uses the following model:
+
+$$Crecov_{j,k} \sim ln\mathcal{N}\Big(ln\big((ACS^{initial}_{j}-ACS^{min}_{j}) \times (1-e^{-\beta \times (t_k/\ \theta_{j})^\gamma})\big), \sigma^2 \Big)$$
+with $ACS^{initial}_{j}$, the pre-disturbance ACS of plot *j* and $ACS^{min}_{j}$ its ACS immediatly post-logging and
+
+$\theta_j \sim \mathcal{N}_{t0} \Big(\theta_0 + \sum_{l=1}^{6} (\lambda_l \times V_{j,l}), \sigma_{\beta}^2 \Big)$ , V being the following covariates (standardised to mean of zero and standard deviation of 1 accross all observations used to fit the model):
+
+* *loss* is the disturbance intensity of the plot $loss=\frac{ACS^{initial}-ACS^{min}}{ACS^{initial}} \times 100$ 
+
+* *acs~0~* mean pre-disturbance ACS accross plots of a site (used to fit the model, to use it for prediction, there is just one plot per site so $acs~0~= ACS^{initial}$)
+
+* *dacs* relative ACS of the plot, as a % of acs~0~, so $dacs = \frac{acs_{i}-ACS_{0}}{ACS_{0}} \times 100$ (here, taken as 0 as only one plot per site)
+
+* *prec*, *seas* and *bd* respectively the annual precipitation, the precipitation seasonality and the bulk density of the site/plot
+
+For this method, the sd of Crecov is not considered.
+
+
+### Method 2
+
+This is the method used for the publication.
+It uses the following model:
+
+$$Crecov_{j,k} \sim ln\mathcal{N}\Big(ln\big(\alpha_j^{Max}  \times (1-e^{-\beta \times (t_k/\ \theta_{j})^\gamma})\big), \sigma^2 \Big)$$
+
+with $\theta_j \sim \mathcal{N}_{t0} \Big(\theta_0 + \sum_{l=1}^{6} (\lambda_l \times V_{j,l}), \sigma_{\theta}^2 \Big)$ (V being the same standardised covariates than for method 1).
+
+This model is fitted using TmFO data. 
+$\alpha_j^{Max}$ is the value at the asymptote.
+It is infered by the model using a different prior for each plot $\mathcal{N} (ACS^{initial}_{j} - ACS^{min}_{j},5)$.
+
+```{r}
+  # get the sd of alphamax
+    PostalphamaxP <- CoeffRecov_m2[, 12:144, with=FALSE] 
+    sdAlphamaxRecov <- PostalphamaxP[ , lapply(.SD, sd)]
+    sdAlphamaxRecov <- data.table(plot=colnames(sdAlphamaxRecov), sd= t(sdAlphamaxRecov))
+    sdAphamaxRecov <- median(sdAlphamaxRecov$sd.V1)
+    rm(PostalphamaxP)
+```
+
+
+To apply this model to each plot x run, we draw $\alpha_j^{Max}$ in $\mathcal{N}_{t0} (ACS^{initial}_{j} - ACS^{min}_{j},`r round(sdAphamaxRecov,3)`)$.
+`r round(sdAphamaxRecov,3)` is the median accross all plots used to fit the model of the sd of posteriors $\alpha_j^{Max}$ per plot.
+
+To keep the error constant for all years of a given plot *j* x run *s*, we took
+$$ Crecov_{k,j,s} = exp(ln(\alpha_j^{Max} \times (1-e^{-\beta \times (t_k/\ \theta_{j})^\gamma})\big) + \epsilon_{j,s})$$
+with $\epsilon_{p,s} \sim \mathcal{N}(0, \sigma_{p,s})$.
+
+
+
+## Regeneration (function *Regeneration*)
+
+This function give the cumulative C balance due to regeneration on main skid trails and logging decks (not on logging roads) accross all logging units, for each year and each run. 
+
+
+ACS recovered t year after logging is modelled as follow:
+
+$$ACS_{t} \sim lnN\big(log(ACS_{max}*(1-exp(-\theta \times t))); \sigma^2 \big)$$
+
+with $0\leq theta\leq1$ and $0\leq \sigma$ the parameters of the model  and $ACS_{t}$ the C regenerated at successional year t. 
+
+Data used to fit the model are obtained from the secondary forest Arbocel (Cirad inventory of all trees > 10 cm DBH).
+Each of the four subplots is considered as a different observation.
+$ACS_{max}$ is the maximum ACS (at the asymptote).
+It is inferred from the model using the prior $\mathcal{N}(185,12)$  (reference from Paracou).
+
+This model is applied to each plot x run, taking ACS~max~ in a normal distribution with a mean of ACS~0~, the pre-logging ACS of the plot x run and a standard deviation equal to the standard deviation of the posterior of ACS~max~ obtained with the model (to propagate the uncertainty due to the model).
+
+To keep the error constant for all years of a given plot *p* x run *s*, we took
+$$ ACS_{t,p,s} = exp(log(ACS_{max}*(1-exp(-\theta_{p,s} \times t))) + \epsilon_{p,s})$$
+with $\epsilon_{p,s} \sim \mathcal{N}(0, \sigma_{p,s})$.
+
+
+
+
+# Sub-models and functions used for both plantation and logging
+
+
+## Cumulative C fluxes from the sawmill (function *Sawmill*)
+
+
+For plantation, the quantity of C arriving in the sawmill, for a given year *y* and a given plantation *p* is
+$C_{entryMill} = C_{sawmil,y} \times Area_{Plant,p}$ (in t).
+
+For logging in natural forest, the quantity of C arriving at the sawmill, for each logging unit *p* is
+$C_{entryMill} = Log_{Int} \times WD_{timber} \times C_{content} \times Area_{Logged,p}$ (in t).
+
+This C in the wood arriving at the sawmill can have four different fates:
+
+- a quantity $C_{sawnAlt} = E_{sawmill} \times R_{sawnAlt} \times  C_{entryMill}$ is valorised as sawnwood that is used instead of another material (where **E~sawmill~** is the sawmill efficiency and **R~sawnAlt~** the proportion of sawnwood that is used instead of another material, both chosen in the scenario)
+
+- a quantity $C_{sawnWood} = E_{sawmill} \times (1-R_{sawnAlt}) \times  C_{entryMill}$ is valorised as sawnwood that is used for a product usually made of wood (so not instead of another material)
+
+- a quantity $(1 - E_{sawmill}) \times (1 - `r Rwaste`) \times C_{entryMill}$ of sawdust is valorised as a byproduct and sent to biomass plant to produce energy. 
+For the next step, we keep this amount as a value per ha $C_{SawmillFuel}$
+
+- a quantity $C_{DustWaste} = `r Rwaste`\times (1 - E_{sawmill}) \times C_{entryMill}$ is true waste for which all the C is emitted in the year of logging. The value of `r Rwaste*100`% of true waste is taken from expert knowledge.
+
+
+This function give the cumulative C balances from the sawmill plant accross all logging unit:
+
+* CcumSawnAlt is the culumative flux in sawnwood used instead of another material
+
+* CcumSawnwood is the culumative flux in sawnwood used in a prduct traditionally made of wood 
+
+* CcumDustWaste is the culumative emission of C from dust waste.
+All the C in dust waste is emitted in the year of logging.
+
+* CcumSawmillNoAvoid is the cumulative balance of the sawmill if there were no avoided emission from the use of wood instead of another material 
+
+* CSawmillFuel is a vector of the C in byproduct of sawmill that is sent to the biomass plant to produce energy
+
+
+#### C in wood used instead of another material
+
+The C in wood used instead of another material leads to avoided emission. 
+The displacement factor (in t of C emission avoided per t of C in the wood) is $DF\sim \mathcal{N}(`r CoeffDF[,mu]`, `r CoeffDF[,sigma]`^2)$. 
+(*NB* DF can be negative).
+The distribution of DF has been fitted from values presented in the meta-study of Sathre and O’Connor 2010 (taking the middle values in table 1 and considering only the study that  account for energy for material production and don't account for biomass residues for energy and C dynamics in forest, to be consistent with our model and avoid double counting).
+This reduced emission is counted in the year of logging.
+One single value of DF is chosen per run as this is a value relevant at the country scale.
+The end of life and emission for production of the wood products being taken into account in the DF, there is no other flux related to *C~sawnAlt~*.
+
+
+#### C in wood used for a product usually made of wood
+
+In this case there is no avoided emission.
+This type of wood products has a half-life $t_{0.5} \sim \mathcal{N_{t0}}(35,15)$ (normal distrubution truncated at 0), according to IPCC guidelines 2003 and paper Camila CBM.
+One single value of t~0.5~ is chosen per run.
+The cumulative emissions at time t are obtained as follow
+$$C_{decaySawn} = C_{sawnWood} \times (1-exp(-\lambda_{sw} * t))$$ 
+with $\lambda_{sw} = \frac{ln(2)}{t_{0.5}}$.
+
+For this part, we also need to account for the functioning of the sawmill (in t, emitted in the year of logging) as:
+$$C_{emisSawn} = \frac{C_{sawnWood}}{WD_{timber} * Ccontent} \times Conso_{sawmill} * \frac{C_{fossil}}{1000}$$ 
+where $Conso_{sawmill}\sim \mathcal{U}(35.2,102.4)$ is the energie consomption of the sawmill (source FCBA 2017 corrected to account for a higher WD of tropical wood that make then less easy to saw) (one value of Conso~sawmill~ is taken per run) in kWh/m3 and C~fossil~ are the emissions for the production of electricity from combustion of fossil fuel: `r round(Cfossil,2)` kgC/kWh (ie `r Cfossil*44*1000/12` gCO~2~/kWh (source PRERURE Guyane 2012)
+
+The correction of energy to saw tropical wood is based on a WD at 12% humidity of 0.736 for French Guiana and 0.46 for metropolitan France (0.6375 for hardwood and 0.425 for softwood, source Laurent Descroix).
+
+
+#### Calculation of avoided emission from sawmill
+
+As the  displacement factor used to calculate the balance of C due to sawnwood used instead of another material give the net balance of really avoided fluxes (the C fluxes related to the other material that is being replaced by wood) and the emission from this wood (end of life and sawmill consumption), it is difficult to distinghuish these two parts and get the actual avoided emission.
+Among several possible methods, we have chosen to calculate all emission from from sawmill if none of the wood would be used instead of another material (CcumSawmillNoAvoid).
+The avoided emission is the difference between the net emission with no wood used instead of another material and the emission we calculated with the method above (summing balance for wood used instead of another material and wood used for a use traditionnal wood).
+
+
+## Cumulative C fluxes from the Biomass plant (function *BiomassPlant*)
+
+This function gives the cumulative balance of C from biomass plant, accross all logging units, for each year and each run.
+
+For plantation, the amount of fuellwood arriving in biomass plant for a given plantation in a given year *Fuelwood* (in t of wood at 45% humidity) is:
+$$Fuelwood = \frac{Cfuel + CSawmillFuel}{Ccontent * (1-H)} \times AreaPlanted$$
+
+For fuelwood as by-product of logging in natural forests, the amount of fuelwood arriving in biomass plant for a given logging unit *Fuelwood* (in t of wood at 45% humidity) is:
+$$Fuelwood = \frac{CdamFuel + CDeforFuel + CSawmillFuel}{Ccontent * (1-H)} \times AreaLogged$$
+
+The C balance from biomass plant, for a given amount of fuelwood arriving in biomass plant *Fuelwood*, is $Cbiomass = Cburnt - CavoidFuel + CopBiomass$  with: 
+
+* *Cburnt* (in t): the emission of all the C contained in the fuelwood arriving at the biomass plant.
+
+* *CavoidFuel* (in t) the C corresponding to the avoided emission by producing electricity from fuelwood instead of fosil fuel.
+$CavoidFuel =  PCI_{h} \times Fuelwood \times E_{biomassPlant} \times C_{fossil}/1000$
+with
+    + PCI~h~ the lower heating value (in french *pouvoir calorifique inférieur*, PCI) of wood with a humidity content of H (in kWH/t). For natural forests, it is obtained from the lower heating value of dry wood (PCI~dry~) taken as the average value for the 50 most common species in northern French Guiana weighted by their abundance. PCI~dry~=`r PCIdryNatFor` MJ/kg so PCI~h~=`r round((PCIdryNatFor*1000 * (1-H) - 2443 *H) *0.277778,2)` kWh/t (source rapport Pinta Cirad, 2011). 
+For plantation, a different value is given to each plantation, taken from the values of species considered for the plantation growth model.
+    + E~biomassPlant~, the efficiency of biomass plant (depending on the scenario).
+    + C~fossil~ the emissions for the production of electricity from combustion of fossil fuel: `r round(Cfossil,2)` kgC/kWh (ie `r Cfossil*44*1000/12` gCO~2~/kWh (source PRERURE Guyane 2012). We only consider avoided emission from fossil fuel because the electric dam being already not sufficient for the current electricity consumption, all future needs are expected to be met by fossil fuel. C~fossil~ takes into account the production, transport and combustion of fossil fuel.
+    
+* *CopBiomass* (in t) the C emited by the functionning of the biomass plant (only wood chipping and construction of storage platform are considered because they are not necessary for another source of energy): $CopBiomass= Fuelwood * `r EmisBiomassPlant`$ (source ONF-ADEME study (Balata Saut-Leodate, 2011).
+
+All these fluxes happen in the same year than logging.
+
+
+## Cumulative C fluxes from Activities (function *ActCum*)
+
+The function *ActCum* gives the cumulative C balance due to all activies accross all plots, for each year and each run.
+It distinghises two types of fluxes
+
+* CplantAct: all activities except transport and loading (for plantation: deforestation, preparation of plantation, plantation, cleaning, thining and final harvest, and for natural forest: planning, road building and logging) 
+
+* CcumTrans : emissions from transports, including loading (forest/plantation to sawmill, forest/plantation to biomass plant and sawmill to biomass plant).
+The transport of sawdust valorised as a byproduct from the sawmill to the biomass plant (`r EmisTransport` kg C/t of dry sawdust and km of transport). 
+
+
+All these emissions are accounted for in the year when they occur.
+
+
+## Deadwood decay in forest (function *DecayResid*)
+
+
+This function gives the cumulative balance of C from decay of deadwood leaft on site, accross all plots, for each year and each run.
+
+For plantation, the calculation of *C~FWN~* and *C~LWN~* has already been done in the functions *DeforPlant* and *PlantTraj*.
+
+For logging in natural forests, the amount of C in deadwood left to decay (*Cdecayha*) is the sum of *Cdamresid* (C in residual deadwood from damage) and *CDeforResid* (C in residual deadwood from logging roads, main skid trails and logging decks).
+We use the models of decay from Piponiot et al 2016 CBM in which fine woody necromass (FWN) and large woody necromass (LWN) decay are considered separatly. 
+The proportion of LWN (*f~LWN~*) has been estimated for undisturbed plots of 11 Guyafor sites.
+$f_{LWN} \sim \mathcal{B}eta(1115,169)$.
+So $C_{FWN} = (1-f_{LWN}) \times C_{decayha}$ and $C_{LWN} = f_{LWN} \times C_{decayha}$.
+
+Cumulative emissions (*C~emis~*) of C at time *t* (per ha) for plot *p* are given as follow:
+
+- for FWN: 
+$$C_{emisFWN,p} = C_{FWN,p} \times (1-exp(-\lambda_{FWN} \times t))$$
+where $\lambda_{FWN}$ is the dacay rate of FWN.
+
+- for LWN, the sapwood and heartwood have two different decay rates ($\lambda_{1}$ and $\lambda_{2}$):
+$$C_{emisLWN,p} = C_{LWN,p} \times \Big(1- \pi_{1} \times exp(-\lambda_{1} \times t) - (1-\pi_{1}) \times exp(-\lambda_{2} \times t) + \epsilon_{LWN,p} \Big)$$
+where $\pi_{1}$ is the fraction of large woody necromass decomposing with the rate $\lambda_{1}$  and $\epsilon_{LWN,p}$ is the additive error for the plot p, taken in $\mathcal{N}(0;\sigma_{LWN}^2)$.
+
+
+
+# Cumulative Carbon balance
+
+
+
+## Calculate cumulative C balance (function RunScenario)
+
+This function run all the other functions and give an output containing:
+
+* *dataNatFor*: information on all plots of natural forest that have logged (dataframe with one row per logging plot and run)
+
+* *dataPlantation*: information on every year of all plantations (dataframe with one row per year of plantation and run)
+
+* *CcumPgrowth*: cumulative C stored in trees growing in plantations, accross all plantations, for each year and each run (dataframe with one row per rum and one colum per year)
+
+* *CcumPsawmill*: cumulative C in sawmill for plantation (list of 3 dataframes with one row per rum and one colum per year):
+    + *CcumPSawnAlt* is the culumative flux in sawnwood coming from plantation used instead of another material (dataframe with one row per rum and one colum per year)
+    + *CcumPsawnwood* is the culumative flux in sawnwood coming from plantation used in a product traditionally made of wood
+    + *CcumPdustWaste* is the culumative emission of C from dust wastecoming from plantation.
+    + *CcumPSawmillNoAvoid* is the cumulative balance of the sawmill for wood coming from plantation if they were no avoided emission from the use of wood instead of another material
+  
+* *CcumPbiomassP*: cumulative balance of C from biomass plant for plantation (list of 3 dataframes with one row per rum and one colum per year):
+    + *CcumPburnt* emission of all the C contained in the fuelwood from plantation arriving at the biomass plant by combustion
+    + *CcumPavoidFuel*:C corresponding to the avoided emission by producing electricity from fuelwood from plantation instead of fosil fuel
+    + *CcumPopBioPlant*: C emited by the functionning of the biomass plant for plantation
+
+* *CcumPAct*: C balance due to all activies in plantation (list of 2 dataframes with one row per rum and one colum per year):
+    + *CplantAct*: all activities except transport and loading ( deforestation, preparation of plantation, plantation, cleaning, thining and final harvest)
+    + *CcumTrans* : emissions from transports, including loading of wood product from plantation
+
+* *CcumPdecay*: C emission from decay of deadwood leaft on site accross all plantations, for each year and each run (dataframe with one row per rum and one colum per year)
+
+* *CcumNFrecov*: C storage from recovery of logged natural forests, for each year and each run (dataframe with one row per rum and one colum per year)
+
+* *CcumNFrege*: C storage from regeneration of deforested area in logged natural forests, for each year and each run (dataframe with one row per rum and one colum per year)
+
+* *CcumNFsawmill*: cumulative C in sawmill for natural forest (list of 3 dataframes with one row per rum and one colum per year):
+    + *CcumNFSawnAlt* is the culumative flux in sawnwood coming from natural forest used instead of another material (dataframe with one row per rum and one colum per year)
+    + *CcumNFsawnwood* is the culumative flux in sawnwood coming from natural forest used in a product traditionally made of wood
+    + *CcumNFdustWaste* is the culumative emission of C from dust waste coming from natural forest.
+    + *CcumNFSawmillNoAvoid* is the cumulative balance of the sawmill for wood coming from natura forest if they were no avoided emission from the use of wood instead of another material
+
+* *CCumNFbiomassP*: cumulative balance of C from biomass plant for natural forest (list of 3 dataframes with one row per rum and one colum per year):
+    + *CcumNFburnt* emission of all the C contained in the fuelwood from natural forest arriving at the biomass plant by combustion
+    + *CcumNFavoidFuel*:C corresponding to the avoided emission by producing electricity from fuelwood from natural forest instead of fosil fuel
+    + *CcumNFopBioPlant*: C emited by the functionning of the biomass plant for natural forest
+
+* *CcumNFAct* C balance due to all activies in natural forest (list of 2 dataframes with one row per rum and one colum per year):
+    + *CplantAct*: all activities except transport and loading (planning, road building and logging)
+    + *CcumTrans* : emissions from transports, including loading of wood product from natural forest
+
+* *CcumNFdecay*: C emission from decay of deadwood leaft on site accross all logged natural forests, for each year and each run (dataframe with one row per run and one colum per year)
+
+
+If *ConnectPast* is true, the past emission from `r min(dataPastLogging$t0)` to `r max(dataPastLogging$t0)` are taken into account, using the actual logging data from the ONF.
+In this case, the function *RunScenario* also gives:
+
+* *dataPastLog*: information on all plots of natural forest that have logged from `r min(dataPastLogging$t0)` to `r max(dataPastLogging$t0)` (dataframe with one row per logging plot and run)
+
+* all the cumulative C presented above for prospective scenario in Natural Forest, calculated in the same way, with a few differences for:
+
+   + Logging intensity is the actual logging intensity reported by the ONF
+
+   + *CcumPastrecov* and *CcumPastrege*: when a plot (or part of it) is deforested for plantation in the prospective part of the model, the recovery and regeneration stop.
+
+  + There is no use of wood from damage for fuelwood and sawdust is valorised as fuelwood only from `r tfirstbioPlant`, when the first biomass plant became active in FG.
+  
+When we consider the past logging, *RunScenario* gives the fluxes for absolute years (historical from `r min(dataPastLogging$t0)` to `r max(dataPastLogging$t0)` and prospective, using the scenario, from `r max(dataPastLogging$t0)+1` to `r max(dataPastLogging$t0)+Tsimu`).
+Otherwise, the years are relative (1 being the first year of simulation).
+  
+
+```{r run Scenario eg, cache=TRUE}
+scenario = "PlantIncrease" # PlantSubst
+nrun = 20
+Tsimu= 70
+VolTimb <- dataScenario[Scenario == scenario, VolTimb]
+LogIntScenar <- dataScenario[Scenario == scenario, LogInt]
+VolTimbPlant <- dataScenario[Scenario == scenario, VolTimbPlant]
+FuelNatFor <- dataScenario[Scenario == scenario, FuelNatFor]
+ConnectPast <- dataScenario[Scenario == scenario, ConnectPast]
+RIL <- dataScenario[Scenario == scenario, RIL]
+outputScenario <- RunScenario(scenario= scenario, nrun=nrun, 
+                              Tsimu=Tsimu, methodRecov = 1)
+#str(outputScenario, max.level=1)
+title <- paste("04_Results/", "Test", scenario, nrun, "run", ".Rdata" ,sep="")
+save(outputScenario, file = title)
+# load("04_results/TestPlantSubst20run.Rdata")
+
+
+``` 
+
+## Summarize C balance (function GetResultFLux)
+
+```{r give CI}
+CI=c(0.025, 0.975)
+```
+
+
+This function gives a csv file with the median and an credibility interval  (`r (CI[2]-CI[1])*100`%) over all runs of all the fluxes.
+These values are given for each year and calculated by summing fluxes accross plots.
+They are the one used to make the graphs of the results.
+This function can be used to get cumulative fluxes in time (in Tg of C) or annual fluxes (in Gg of C).
+
+Each output contains:
+
+* **CcumNET**: the net overall C balance of the scenario (includes past logging and simulated prospective logging in natural forests and plantation), which is the sum of:
+
+    * **CcumNFall**: the net C balance of simulated prospective logging in natural forest, which is the sum of:
+        + **CcumNFrecov**: C storage through forest recovery after logging
+        + **CcumNFrege**: C storage through forest regeneration on main skid trails and logging decks (but not on logging roads)
+        + **CcumNFallSawmill**: net flux in sawmill. This flux results from the avoided emission by using wood instead of another material (**CcumNFSawnAlt**), the emission from degradation of sawnwood used for a product usually made of wood (**CcumNFSawnWood**), and the emission from degradation of wood dust that is not used as fuel (**CcumNFDustWaste**). It aslo give the net fluxes in the sawmill without avoided emission (**CcumNFSawmillNoAvoid**) and the avoided emission (**CcumNFSawmillAvoid**), the sum of the two being CcumNFallSawmill.
+        + **CcumNFallBiomass**: net flux in the biomass plant. This fluxes results from the emission due to wood burning (**CcumNFburnt**), the avoided emission by producting electricity from fuelwood instead of fosil fuel ( **CcumNFavoidFuel**), and the emission due to the functionning of the biomass plant (**CcumNFopBioPlant**).
+        The csv also give the emission from the biomass plant without avoided emission (**CcumNFBiomassNoAvoid**). We then have CcumNFBiomassNoAvoid + CcumNFavoidFuel = CcumNFallBiomass.
+        + **CcumNFallAct**: emission due to transport and other logistical activities 
+        + **CcumNFdecay**: decay of wood left on site
+
+    * **CcumPall**: the net C balance  of simulated prospective plantations, which is the sum of:
+        + **CcumPgrowth**: C storage through growth of plantation trees
+        + **CcumPallSawmill**: net flux in sawmill. This flux results from the avoided emission by using wood instead of another material (**CcumPSawnAlt**), the emission from degradation of sawnwood used for a product usually made of wood (**CcumPSawnWood**), and the emission from degradation of wood dust that is not used as fuel (**CcumPDustWaste**). It aslo give the net fluxes in the sawmill without avoided emission (**CcumPSawmillNoAvoid**) and the avoided emission (**CcumPSawmillAvoid**), the sum of the two being CcumNFallSawmill.
+        + **CcumPallBiomass**: net flux in the biomass plant. This fluxes results from the emission due to wood burning (**CcumPburnt**), the avoided emission by producting electricity from fuelwood instead of fosil fuel ( **CcumPavoidFuel**), and the emission due to the functionning of the biomass plant (**CcumPopBioPlant**).
+        The csv also give the emission from the biomass plant without avoided emission (**CcumPBiomassNoAvoid**). We then have CcumPBiomassNoAvoid + CcumPavoidFuel = CcumPallBiomass.
+        + **CcumPallAct**: emission due to transport and other logistical activities
+        + **CcumPdecay**: decay of wood left on site
+        
+    * **CcumPastall**: the net C balance of historical logging in natural forest, which is the sum of:
+        + **CcumPastrecov**: C storage through forest recovery after logging
+        + **CcumPastrege**: C storage through forest regeneration on main skid trails and logging decks (but not on logging roads)
+        + **CcumPastallSawmill**: net flux in sawmill. This flux results from the avoided emission by using wood instead of another material (**CcumPastSawnAlt**), the emission from degradation of sawnwood used for a product usually made of wood (**CcumPastSawnWood**), and the emission from degradation of wood dust that is not used as fuel (**CcumPastDustWaste**). It aslo give the net fluxes in the sawmill without avoided emission (**CcumPastSawmillNoAvoid**) and the avoided emission (**CcumPastSawmillAvoid**), the sum of the two being CcumNFallSawmill.
+        + **CcumPastallBiomass**: net flux in the biomass plant. This fluxes results from the emission due to wood burning (**CcumPastburnt**), the avoided emission by producting electricity from fuelwood instead of fosil fuel ( **CcumPastavoidFuel**), and the emission due to the functionning of the biomass plant (**CcumPastopBioPlant**).
+        The csv also give the emission from the biomass plant without avoided emission (**CcumPastBiomassNoAvoid**). We then have CcumPastBiomassNoAvoid + CcumPastavoidFuel = CcumPastallBiomass.
+        + **CcumPastallAct**: emission due to transport and other logistical activities
+        + **CcumPastdecayv**: decay of wood left on site
+
+
+## Plot cumulative C fluxes (function graphFlux)
+
+```{r plot cum fluxes, fig.height=7, fig.width=10, warning=FALSE, message=FALSE}
+AllFluxSummaryCum <- GetResultFlux(outputScenario=outputScenario,
+                                   type = "cumulative", 
+                                   scenario=scenario, nrun=nrun, CI=CI)
+# save the output 
+graphCumFlux <- graphFlux(AllFlux4graph=AllFluxSummaryCum, 
+                          typeGraph = "cumulative",  
+                          ylim=c(-12,10))
+graphCumFlux
+```
+
+The graph above is for the scenario *`r scenario`* with `r nrun` run over `r Tsimu` years.
+Credibility interval are at `r (CI[2]-CI[1]) * 100` %.
+The dashed line is the start of the prospective simulation, and the dottted one is the year when the first plantation are harvested.
+
+
+
+## Plot annual C fluxes (function graphFlux)
+
+```{r plot annual fluxes, fig.height=7, fig.width=10, warning=FALSE, message=FALSE}
+AllFluxSummaryAn <- GetResultFlux(outputScenario=outputScenario,
+                                  type = "annual", 
+                                  scenario=scenario, nrun=nrun, CI=CI)
+
+graphAnFlux <- graphFlux(AllFlux4graph=AllFluxSummaryAn,
+                         typeGraph = "annual", ylim=c(-500,250))
+graphAnFlux
+```
+
+The graph above is for the scenario *`r scenario`* with `r nrun` run over `r Tsimu` years.
+Credibility interval are at `r (CI[2]-CI[1]) * 100` %.
+The dashed line is the year when the first plantation are harvested.
+
+
+## Plot annual timber volume (function graphQt)
+
+```{r plot annual timber volume, warning=FALSE, message=FALSE}
+graphAnVol <- graphQt(outputScenario=outputScenario,
+                      typeGraph = "Timber",
+                      scenario=scenario, 
+                      CI=CI)
+
+graphAnVol + geom_hline(yintercept=0)
+```
+
+The graph above is for the scenario *`r scenario`* with `r nrun` run over `r Tsimu` years.
+Credibility interval are at `r (CI[2]-CI[1]) * 100` %.
+The vertical dashed line is the year when the first plantation are harvested.
+The horizontal dashed line is the expected annual volume of timber of the scenario.
+
+
+## Plot annual amount of energy produced from wood (function graphQt)
+
+The energy (in GWh) produced from a given amount of green wood (*Fuelwood* in t) is calculated as $Energy_{prod} = Fuelwood \times PCi_h \times E_{biomass}/1000000$ (see section on biomass plant).
+
+```{r plot annual energie, warning=FALSE, message=FALSE}
+graphAnEnergy <- graphQt(outputScenario=outputScenario,
+                      typeGraph = "Energy", EbiomassPlant = 0.22,
+                      scenario=scenario, 
+                      CI=CI)
+graphAnEnergy
+```
+
+The graph above is for the scenario *`r scenario`* with `r nrun` run over `r Tsimu` years.
+Credibility interval are at `r (CI[2]-CI[1]) * 100` %.
+The vertical dashed line is the year when the first plantation are harvested.
+
