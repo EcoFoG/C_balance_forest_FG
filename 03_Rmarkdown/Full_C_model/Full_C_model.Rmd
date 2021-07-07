@@ -3,6 +3,12 @@ title: "Model of carbon balance in managed forest of French Guiana"
 author: "Geraldine Derroire, Camille Piponiot, Laurent Descroix, Bruno Herault"
 date: "`r format(Sys.time(), '%d %B %Y')`"
 output:
+  pdf_document:
+    toc: yes
+    toc_depth: '5'
+  word_document:
+    toc: yes
+    toc_depth: '5'
   html_document:
     fig_caption: yes
     highlight: pygments
@@ -11,9 +17,6 @@ output:
     toc: yes
     toc_depth: 5
     toc_float: yes
-  word_document:
-    toc: yes
-    toc_depth: '5'
 ---
 
 
@@ -86,7 +89,7 @@ There is a possibility to take two different value for the expeted duration *Pla
 # Sub-models and functions for plantation
 
 
-```{r model plantation, fig.cap="Conceptual model for plantation (red boxes and arrows represent C emission, green boxes represent C storage)", echo=FALSE}
+```{r model plantation, fig.cap="Conceptual model for plantation (red boxes and arrows represent C emission, green boxes represent C storage)", echo=FALSE, out.width = "80%"}
 knitr::include_graphics("model_plantation.PNG")
 ```
 
@@ -386,7 +389,7 @@ This function gives the cumulative C stored in trees growing in plantations, acc
 
 # Sub-models and functions for selective logging in natural forests
 
-```{r model nat for, fig.cap="Conceptual model for logging in natural forests (red boxes and arrows represent C emission, green boxes represent C storage)", echo=FALSE}
+```{r model nat for, fig.cap="Conceptual model for logging in natural forests (red boxes and arrows represent C emission, green boxes represent C storage)", echo=FALSE, out.width = "80%"}
 knitr::include_graphics("model_nat_forest.PNG")
 ```
 
