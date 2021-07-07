@@ -7,4 +7,4 @@ All input data and parameters apply to the case of French Guiana, but the model 
 
 The functionning of the model and all its functions is presented [here](03_Rmarkdown/Full_C_model/Full_C_model.pdf).
 
-Code developed by: Géraldine Derroire, Camile Piponiot, Bruno Hérault, with expert knowledge from Laurent Descroix
+Code developed by: [Géraldine Derroire](https://github.com/GeraldineDerroire), [Camile Piponiot](https://github.com/cpiponiot), [Bruno Hérault](https://github.com/BrunoHerault), with expert knowledge from Laurent Descroix
