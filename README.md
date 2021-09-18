@@ -14,3 +14,6 @@ The folder [03_Rmarkdown](03_Rmarkdown) countains the description of the model.
 Output of the model are stored in the folder [04_Results](04_Results).
 
 Model and code developed by: [Géraldine Derroire](https://github.com/GeraldineDerroire), [Camile Piponiot](https://github.com/cpiponiot), [Bruno Hérault](https://github.com/BrunoHerault), with expert knowledge from Laurent Descroix
+
+Derroire, G., Piponiot, C., Descroix, L., Bedeau, C., Traissac, S., Brunaux, O., & Hérault, B. (2021). [Prospective carbon balance of the wood sector in a tropical forest territory using a temporally-explicit model. Forest Ecology and Management](https://doi.org/10.1016/J.FORECO.2021.119532), *Forest Ecology and Management*, 497, 119532. 
+
